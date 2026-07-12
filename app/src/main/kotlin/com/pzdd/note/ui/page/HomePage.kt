@@ -24,8 +24,10 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -108,9 +110,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -214,6 +218,8 @@ fun HomePage(
     // 多列模式：添加/编辑子笔记（提升到顶层，NoteEditDialog 在顶层渲染确保全屏居中）
     var deepAddChildParent by remember { mutableStateOf<Note?>(null) }
     var deepEditingChild by remember { mutableStateOf<Note?>(null) }
+    // 多列模式：重命名父笔记（提升到顶层，RenameDialog 在顶层渲染确保浮于最上层）
+    var deepRenamingNote by remember { mutableStateOf<Note?>(null) }
 
     // 搜索栏展开/收起状态：向上滚动收起，向下滚动展开
     var searchBarExpanded by remember { mutableStateOf(true) }
@@ -665,7 +671,7 @@ fun HomePage(
                                 vm.deleteNote(parentNote)
                                 Toast.makeText(context, "已删除", Toast.LENGTH_SHORT).show()
                             },
-                            onRename = { newTitle -> vm.updateNoteTitle(parentNote, newTitle) },
+                            onRename = { deepRenamingNote = parentNote },
                             onRequestAddChild = { deepAddChildParent = parentNote },
                             onRequestEditChild = { child -> deepEditingChild = child },
                             onDeleteChild = { child -> vm.deleteNote(child) },
@@ -779,6 +785,18 @@ fun HomePage(
                 deepEditingChild = null
             },
             onHideBottomBar = onHideBottomBar
+        )
+    }
+
+    // 多列模式：重命名父笔记（顶层渲染，独立图层浮于所有列表条目之上）
+    deepRenamingNote?.let { note ->
+        RenameDialog(
+            initialTitle = note.title,
+            onDismiss = { deepRenamingNote = null },
+            onConfirm = {
+                vm.updateNoteTitle(note, it)
+                deepRenamingNote = null
+            }
         )
     }
     actionNote?.let { note ->
@@ -993,7 +1011,6 @@ private fun DeepParentCard(
     onReorderChild: (Long, Long) -> Unit
 ) {
     var expanded by rememberSaveable(parentNote.id) { mutableStateOf(false) }
-    var showRenameDialog by remember { mutableStateOf(false) }
 
     val dateFormatter = remember {
         java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault())
@@ -1100,7 +1117,7 @@ private fun DeepParentCard(
                         modifier = Modifier.size(20.dp)
                     )
                 }
-                IconButton(onClick = { showRenameDialog = true }, modifier = Modifier.size(32.dp)) {
+                IconButton(onClick = { onRename(parentNote.title) }, modifier = Modifier.size(32.dp)) {
                     Icon(
                         Icons.Filled.Edit,
                         contentDescription = "重命名",
@@ -1188,17 +1205,7 @@ private fun DeepParentCard(
         }
     }
 
-    // 重命名对话框
-    if (showRenameDialog) {
-        RenameDialog(
-            initialTitle = parentNote.title,
-            onDismiss = { showRenameDialog = false },
-            onConfirm = {
-                onRename(it)
-                showRenameDialog = false
-            }
-        )
-    }
+    // 重命名对话框已提升到 HomePage 顶层渲染，确保浮于所有列表条目之上
 }
 
 @Composable
@@ -1305,25 +1312,153 @@ internal fun RenameDialog(
     onConfirm: (String) -> Unit
 ) {
     var text by remember { mutableStateOf(initialTitle) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("重命名", style = MaterialTheme.typography.titleMedium) },
-        text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text("标题") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(text.trim()) }) { Text("确定") }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
-        }
+    var saved by remember { mutableStateOf(false) }
+    var visible by remember { mutableStateOf(false) }
+    var pendingDismiss by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+
+    val dismissWithSave: () -> Unit = {
+        if (!saved) saved = true
+        visible = false
+        pendingDismiss = true
+    }
+    val dismissWithoutSave: () -> Unit = {
+        visible = false
+        pendingDismiss = true
+    }
+
+    val animProgress by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow
+        ),
+        label = "renameAnim"
     )
+    val sheetScale = 0.85f + 0.15f * animProgress
+
+    LaunchedEffect(animProgress, pendingDismiss) {
+        if (pendingDismiss && animProgress < 0.01f) {
+            if (saved) onConfirm(text.trim()) else onDismiss()
+        }
+    }
+
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val baseColor = if (isLight) Color(0xFFF0F0F3) else Color(0xFF1C1C1E)
+    val glassColor = baseColor.copy(alpha = 0.55f)
+    val frostLayer = if (isLight) Color.White.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.05f)
+    val highlightColor = if (isLight) Color.White.copy(alpha = 0.4f) else Color.White.copy(alpha = 0.08f)
+    val borderColor = Color.White.copy(alpha = 0.6f)
+    val shadowColor = if (isLight) Color.Black.copy(alpha = 0.15f) else Color.Black.copy(alpha = 0.4f)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.3f * animProgress))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = dismissWithoutSave
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            modifier = Modifier
+                .width(320.dp)
+                .graphicsLayer {
+                    scaleX = sheetScale
+                    scaleY = sheetScale
+                    alpha = animProgress
+                }
+                .shadow(24.dp, RoundedCornerShape(28.dp), ambientColor = shadowColor, spotColor = shadowColor)
+                .clip(RoundedCornerShape(28.dp))
+                .background(glassColor)
+                .background(frostLayer)
+                .background(Brush.verticalGradient(listOf(highlightColor, Color.Transparent, Color.Transparent)))
+                .border(0.5.dp, borderColor, RoundedCornerShape(28.dp))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}
+                )
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(24.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                Text(
+                    text = "重命名",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isLight) Color.Black else Color.White
+                )
+
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text("标题") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 取消按钮
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                if (isLight) Color.Black.copy(alpha = 0.05f)
+                                else Color.White.copy(alpha = 0.08f)
+                            )
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = dismissWithoutSave
+                            )
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = "取消",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = if (isLight) Color.Black.copy(alpha = 0.7f) else Color.White.copy(alpha = 0.7f)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(8.dp))
+
+                    // 确定按钮
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = dismissWithSave
+                            )
+                            .padding(horizontal = 20.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = "确定",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1661,3 +1796,4 @@ private fun IOSMenuRow(
         }
     }
 }
+//file
