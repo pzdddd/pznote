@@ -145,8 +145,8 @@ class NoteViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleFavorite(note: Note) {
         _notes.value = _notes.value.map {
             if (it.id == note.id) it.copy(
-                isFavorite = !it.isFavorite,
-                updatedAt = System.currentTimeMillis()
+                isFavorite = !it.isFavorite
+                // 不更新 updatedAt：收藏只是标记操作，不应改变笔记的排序位置
             ) else it
         }
         persist()
@@ -155,8 +155,8 @@ class NoteViewModel(app: Application) : AndroidViewModel(app) {
     fun togglePin(note: Note) {
         _notes.value = _notes.value.map {
             if (it.id == note.id) it.copy(
-                isPinned = !it.isPinned,
-                updatedAt = System.currentTimeMillis()
+                isPinned = !it.isPinned
+                // 不更新 updatedAt：置顶只是标记操作，不应改变笔记在同组内的排序位置
             ) else it
         }
         persist()
