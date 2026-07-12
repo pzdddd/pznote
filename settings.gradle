@@ -20,6 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "zl"
+rootProject.name = "pznote"
 include ':app'
-project(':app').projectDir = new File(rootDir, 'zl/app')
